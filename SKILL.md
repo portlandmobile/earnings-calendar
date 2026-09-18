@@ -85,67 +85,28 @@ Format (matches Yahoo Finance display):
 
 ### Process
 
-#### Step 1 — Get today's reporting list
-- Read the latest weekly report: `~/MyVault/Projects/Trading/Screeners/earnings_week_YYYY-MM-DD.md`
-- Filter to companies reporting **today** (match the date column)
-- If no weekly report exists for this week, fall back to AInvest to find today's reporters
-- Save the ticker list for reference
+#### Step 1 — Run the daily pipeline script
 
-#### Step 2 — Process each stock individually (context-safe)
-For **each** company in today's list, do NOT batch them:
+```bash
+python3 {skillDir}/earnings_daily.py --date YYYY-MM-DD --period morning|afternoon
+```
 
-1. **Pull current quarter actuals** via the Google Finance script:
-   ```bash
-   python3 {skillDir}/gfinance_earnings.py TICKER:EXCHANGE
-   ```
-   - `TICKER` = stock ticker, `EXCHANGE` = `NYSE`, `NASDAQ`, or `AMEX`
-   - Output is saved as a JSON file. Store in a temp folder (e.g., `{skillDir}/.temp_earnings/`)
-   - Parse the JSON to extract: Estimate EPS, Actual EPS, EPS Surprise %, Estimate Revenue, Actual Revenue, Revenue Surprise %
-   - If the script fails or returns an error, flag the ticker as `❌ Error` and move on
+This single command does everything in one pass:
+- Auto-detects the weekly report for the current week
+- Fetches EPS/Revenue actuals from Google Finance for each ticker (no temp files)
+- Ranks results by: mkt cap → EPS surprise → rev surprise → both-beat
+- Saves three files to `~/MyVault/Projects/Trading/Screeners/`:
+  - `earnings_full_{YYYY-MM-DD}.md` — full report, all tickers
+  - `earnings_temp_{YYYY-MM-DD}_{period}.md` — same as full (reference copy)
+  - `earnings_top15_{YYYY-MM-DD}.md` — top 15 by ranking
 
-2. **Pull prior quarter actuals** from the weekly report (`earnings_weekly_YYYY-MM-DD.md`) already loaded in Step 1:
-   - Use the Q4 Prior EPS and Q4 Prior Revenue columns for the prior quarter comparison
+The script prints a summary of fetch results (ok vs error count) and lists any tickers that failed.
 
-3. **Build the earnings block** for that single ticker using a SINGLE consolidated table:
-   - One table with columns: `Metric | Prior Quarter | Estimate | Actual | Surprise | QoQ Change`
-   - Two rows: EPS and Revenue
-   - Calculate QoQ as `(actual − prior) / prior` for both EPS and Revenue
-   - If prior quarter EPS or Revenue is N/A, show N/A for that metric
-   - Add metadata line below the table: `**Price Δ:** +/-X% | **Timing:** Before Market / After Close / TAS | **Mkt Cap:** $X.XXB/M` (from weekly report)
-   - Add `**Brief commentary:** 1-2 sentences on the headline takeaway`
-   - Separator `---` after each ticker block
+**Processing scope:** Only "Major" companies from the weekly report (market cap > $1B, NYSE/NASDAQ/AMEX listed). This is ~25–30 companies per run.
 
-4. **Append the block to a temp file**: `~/MyVault/Projects/Trading/Screeners/earnings_temp_{YYYY-MM-DD}_morning.md` or `earnings_temp_{YYYY-MM-DD}_afternoon.md`
-
-5. **Clean up** — delete the temp JSON files after parsing
-
-**Processing scope:** Only process companies with market cap > $500M ("Major" companies from the weekly report). Limit to US-exchange listed companies (NYSE/NASDAQ/AMEX). Skip OTC ADRs. This keeps the run manageable (~25-30 companies max instead of 150+).
-
-#### Step 3 — Stitch the full report + handle pending data
-After all tickers are processed:
-1. Read the temp file and assemble the full report
-2. **Handle errors/incomplete data:** Any ticker marked `❌ Error` should be flagged with a note explaining the data couldn't be retrieved
-3. Save as: `~/MyVault/Projects/Trading/Screeners/earnings_full_{YYYY-MM-DD}.md`
-
-#### Step 4 — Handle error carry-forward
-**Before ranking**, check if a previous day's temp file exists with error tickers:
-- If `earnings_temp_{YYYY-MM-1}_afternoon.md` or `_morning.md` has `❌ Error` tickers, attempt to re-fetch their data
-- If successful, update with actual data
-- If still errored, carry forward with the error flag
-
-#### Step 5 — Select top 15 and deliver
-Rank companies by these priorities (in order):
-1. **US-listed** (prioritize over ADRs/international)
-2. **Market cap** (larger first)
-3. **Positive EPS surprise %** (bigger beats rank higher)
-4. **Positive revenue surprise %**
-5. **Both EPS and revenue beat** (strongest signal)
-
-- **Error tickers:** Include in the full report with `❌ Error` flag and a note. Do NOT include in the top 15 delivery unless no other options exist.
-- Save top 15 as: `~/MyVault/Projects/Trading/Screeners/earnings_top15_{YYYY-MM-DD}.md`
-- Deliver the **full report** to the group chat (same format as the file, including the Quick Summary table with all columns)
-- The full report is also saved as a reference file
-- If any tickers from the top 15 were errored, add a note: "❌ {N} ticker(s) from this list had data retrieval errors — will be updated in the next check"
+#### Step 2 — Deliver
+- Read `earnings_top15_{YYYY-MM-DD}.md` and deliver to the group chat
+- If any tickers errored, the file already includes the `❌` note at the bottom
 
 ### Report Format
 
@@ -213,12 +174,10 @@ Rank companies by these priorities (in order):
 
 ### ⚠️ Key Constraints
 
-- **Exchange format required** — Always use `TICKER:EXCHANGE` format (e.g., `AAPL:NASDAQ`, `BRC:NYSE`). Supported exchanges: `NYSE`, `NASDAQ`, `AMEX`.
-- **Process scope** — Only major companies (market cap > $1B) from the weekly report. Limit to NYSE/NASDAQ/AMEX. Skip OTC ADRs.
-- **Context safety** — Never hold more than one ticker's data in context at a time. Write to file after each ticker.
-- **Error handling** — If `gfinance_earnings.py` fails for a ticker, flag as `❌ Error` and move on. Don't let one failure block the rest.
-- **Error carry-forward** — Re-attempt errored tickers from the previous day before ranking. Don't include errored tickers in the top 15 delivery unless no other options exist.
-- **Temp file cleanup** — Delete JSON files from the temp folder after parsing to avoid clutter.
+- **Single command** — Run `earnings_daily.py`, do not manually fetch tickers one-by-one or write intermediate files.
+- **Process scope** — `earnings_daily.py` reads only "Major" companies (12-column rows) from the weekly report; minor/other companies are skipped automatically.
+- **Error handling** — The script flags failed tickers as `❌ Error` and continues. Do not retry in a loop; the next scheduled run will catch them.
+- **Exchange resolution** — The script tries NASDAQ → NYSE → AMEX automatically; no manual exchange specification needed.
 
 ### Notes
 

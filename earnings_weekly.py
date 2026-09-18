@@ -67,6 +67,32 @@ TICKER_MAP = {
     'BAIDF': 'BIDU',
 }
 
+# Symbols to always exclude (non-US, OTC, known foreign with no reliable US exchange listing)
+# Note: Barrick Mining trades on NYSE as 'B' — keep it. Same for HIMS, ASTS, RIOT, MNDY, etc.
+# This is a fallback filter when investing.com cross-check fails (403 errors)
+NON_US_SYMBOLS = {
+    # Brazilian OTC
+    'JBS', 'BBSEY',
+    # Argentinian OTC
+    'YPF',
+    # Kazakh OTC
+    'KSPI',
+    # Chinese ADR/OTC (no US primary listing)
+    'PTTPF', 'LKNCY',
+    # Japanese OTC (no US primary listing)
+    'RKUNF', 'STMNF', 'SNROF', 'YORUF', 'MSMKF', 'SQNXF', 'SFGRF',
+    # German OTC
+    'GEAGF', 'FMS',
+    # Malaysian OTC
+    'SDPNF', 'SPHXF',
+    # Thai OTC
+    'CRSLF',
+    # Australian OTC
+    'COENF',
+    # Mexican OTC
+    'CIB',
+}
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Weekly Earnings Calendar Generator")
@@ -398,6 +424,14 @@ def generate_report(df, output_path, top_n=50, verbose=False):
     df = df.dropna(subset=['Symbol'])
     df = df[~df['Symbol'].isin(SKIP_SYMBOLS)]
     df = df[~df['Company'].str.contains('|'.join(SKIP_NAMES), case=False, na=False)]
+
+    # Fallback non-US filter (in case investing.com cross-check fails)
+    # These are known foreign/OTC/penny tickers with no reliable US exchange listing
+    if 'Symbol' in df.columns:
+        dropped = df[df['Symbol'].isin(NON_US_SYMBOLS)]
+        if len(dropped) > 0:
+            print(f"Fallback filter: dropping {len(dropped)} non-US ticker(s): {', '.join(dropped['Symbol'].unique())}")
+        df = df[~df['Symbol'].isin(NON_US_SYMBOLS)]
 
     # Sort by market cap descending
     df = df.sort_values('Marketcap', ascending=False)
@@ -759,22 +793,35 @@ def main():
     df = fetch_earnings_calendar(start, end, min_cap=args.min_cap)
     print(f"Fetched {len(df)} companies from Yahoo Finance")
 
-    # Cross-check with investing.com and add any tickers Yahoo Finance missed
-    print("Cross-checking with investing.com...")
+    # Cross-check with investing.com:
+    #   - investing.com already filters to USA-flagged stocks only
+    #   - Use it as a whitelist to drop non-US tickers from Yahoo Finance
+    #   - Also add any US tickers from investing.com that Yahoo missed
+    print("Cross-checking with investing.com (USA-only reference)...")
     inv_df = fetch_earnings_investing_com(start, end)
     if not inv_df.empty:
+        inv_us_symbols = set(inv_df['Symbol'].tolist())
+
+        # Drop non-US tickers (not in the USA whitelist)
+        before_count = len(df)
+        df = df[df['Symbol'].isin(inv_us_symbols)].copy()
+        dropped = before_count - len(df)
+        if dropped > 0:
+            print(f"Dropped {dropped} non-US ticker(s) from Yahoo Finance")
+
+        # Add any US tickers from investing.com that Yahoo missed
         existing = set(df['Symbol'].tolist())
         missing = inv_df[~inv_df['Symbol'].isin(existing)].copy()
         if args.min_cap:
             missing = missing[missing['Marketcap'].notna() & (missing['Marketcap'] >= args.min_cap)]
         if not missing.empty:
             added = missing['Symbol'].tolist()
-            print(f"Adding {len(added)} tickers found on investing.com but missing from Yahoo Finance: {', '.join(added)}")
+            print(f"Adding {len(added)} US ticker(s) from investing.com not in Yahoo Finance: {', '.join(added)}")
             df = pd.concat([df, missing], ignore_index=True)
         else:
-            print("No additional tickers found on investing.com")
+            print("No additional US tickers found on investing.com")
     else:
-        print("WARNING: investing.com returned no data — using Yahoo Finance only")
+        print("WARNING: investing.com returned no data — cannot filter to USA-only, using Yahoo Finance as-is")
 
     # Generate output path
     if args.output:
